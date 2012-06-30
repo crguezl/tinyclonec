@@ -1,4 +1,4 @@
-%w(rubygems sinatra haml dm-core dm-timestamps dm-types uri restclient xmlsimple dirty_words).each  { |lib| require lib}
+%w(rubygems sinatra haml data_mapper dm-core dm-timestamps dm-types uri restclient xmlsimple dirty_words).each  { |lib| require lib}
 disable :show_exceptions
 
 get '/' do haml :index end
@@ -41,9 +41,10 @@ def get_remote_ip(env)
   end
 end
 
-use_in_file_templates!
+#use_in_file_templates!
 
-DataMapper.setup(:default, ENV['DATABASE_URL'] || 'mysql://root:root@localhost/tinyclone')
+#DataMapper.setup(:default, ENV['DATABASE_URL'] || 'mysql://root:root@localhost/tinyclone')
+DataMapper.setup(:default, ENV['DATABASE_URL'] || "sqlite3://#{Dir.pwd}/tinyclone.db")
 class Url
   include DataMapper::Resource
   property  :id,          Serial
