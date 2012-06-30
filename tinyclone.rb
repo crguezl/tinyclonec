@@ -1,9 +1,12 @@
 %w(rubygems sinatra haml data_mapper dm-core dm-timestamps dm-types uri restclient xmlsimple dirty_words).each  { |lib| require lib}
 disable :show_exceptions
 
+DataMapper::Logger.new($stdout, :debug)
+
 get '/' do haml :index end
 
 post '/' do
+  puts params
   uri = URI::parse(params[:original])
   custom = params[:custom].empty? ? nil : params[:custom]
   raise "Invalid URL" unless uri.kind_of? URI::HTTP or uri.kind_of? URI::HTTPS
@@ -61,7 +64,8 @@ class Link
   
   def self.shorten(original, custom=nil)
     url = Url.first(:original => original) 
-    return url.link if url    
+    puts url
+    return url.link if url
     link = nil
     if custom
       raise 'Someone has already taken this custom URL, sorry' unless Link.first(:identifier => custom).nil?
@@ -82,15 +86,19 @@ class Link
   private
   
   def self.create_link(original)
+    puts "inside self.create_link(#{original})"
     url = Url.create(:original => original)
-    if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
-      link = Link.new(:identifier => url.id.to_s(36))
-      link.url = url
-      link.save 
-      return link     
-    else
-      create_link(original)
-    end    
+    puts "<<<<#{url}>>>> <<<<#{url.id}>>>>"
+#  if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
+#   link = Link.new(:identifier => url.id.to_s(36))
+    link = Link.new()
+    link.identifier = 'chazam'
+    link.url = url
+    link.save 
+    return link     
+#  else
+#    create_link(original)
+#  end    
   end
 end
 
@@ -143,6 +151,12 @@ class Visit
   end
 end
 
+#require  'dm-migrations'
+
+#DataMapper.finalize
+
+DataMapper.auto_upgrade!
+
 __END__
 
 @@ layout
@@ -160,14 +174,14 @@ __END__
 %h1.title TinyClone
 - unless @link.nil?
   .success
-    %code= @link.url.original
+    %code= '@link.url.original'
     has been shortened to 
     %a{:href => "/#{@link.identifier}"}
-      = "http://tinyclone.saush.com/#{@link.identifier}"
+      = "http://localhost:9393/#{@link.identifier}"
     %br
     Go to 
     %a{:href => "/info/#{@link.identifier}"}
-      = "http://tinyclone.saush.com/info/#{@link.identifier}"
+      = "http://localhost:9393/info/#{@link.identifier}"
     to get more information about this link.
 - if env['sinatra.error']
   .error= env['sinatra.error'] 
@@ -176,7 +190,7 @@ __END__
   %input{:type => 'text', :name => 'original', :size => '70'} 
   %input{:type => 'submit', :value => 'now!'}
   %br
-  to http://tinyclone.saush.com/
+  to http://localhost:9393/
   %input{:type => 'text', :name => 'custom', :size => '20'} 
   (optional)
 %p  
@@ -194,7 +208,7 @@ __END__
 .span-3 Shortened
 .span-21.last
   %a{:href => "/#{@link.identifier}"}
-    = "http://tinyclone.saush.com/#{@link.identifier}"
+    = "http://localhost:9393/#{@link.identifier}"
 .span-3 Date created
 .span-21.last= @link.created_at
 .span-3 Number of visits
