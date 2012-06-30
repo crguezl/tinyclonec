@@ -8,3 +8,7 @@ task :shotgun do
   sh "shotgun -I. tinyclone.rb"
 end
 
+desc "Remove the data base"
+task :clean do
+  sh "rm tinyclone.db"
+end
