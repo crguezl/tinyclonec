@@ -63,8 +63,10 @@ class Link
   has n, :visits
   
   def self.shorten(original, custom=nil)
+    puts "Inside shorten!!!!"
     url = Url.first(:original => original) 
-    puts url
+    puts "url = <<#{url}>>"
+    puts  "url.link = #{url.link}" if url
     return url.link if url
     link = nil
     if custom
@@ -88,10 +90,17 @@ class Link
   def self.create_link(original)
     puts "inside self.create_link(#{original})"
     url = Url.create(:original => original)
+    if url.saved? 
+      puts "#{url} is a DataMapper::Resource"
+    else
+      puts "#{url} is not yet saved"
+    end
     #url = Url.create()
     #url.original = original
     puts "<<<<#{url}>>>> <<<<#{url.id}>>>>"
-    url.id = 1
+    url.id = 0 if url.id.nil?
+    url.id += 1
+    url.save
     #if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
 #     link = Link.new(:identifier => url.id.to_s(36))
       link = Link.new()
@@ -177,7 +186,7 @@ __END__
 %h1.title TinyClone
 - unless @link.nil?
   .success
-    %code= '@link.url.original'
+    %code= @link.url.original
     has been shortened to 
     %a{:href => "/#{@link.identifier}"}
       = "http://localhost:9393/#{@link.identifier}"
