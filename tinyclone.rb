@@ -87,20 +87,21 @@ class Link
   
   def self.create_link(original)
     puts "inside self.create_link(#{original})"
-    url = Url.create()
-    url.original = original
+    url = Url.create(:original => original)
+    #url = Url.create()
+    #url.original = original
     puts "<<<<#{url}>>>> <<<<#{url.id}>>>>"
     url.id = 1
-    if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
+    #if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
 #     link = Link.new(:identifier => url.id.to_s(36))
       link = Link.new()
       link.identifier = url.id.to_s(36)
       link.url = url
       link.save 
       return link     
-    else
-      create_link(original)
-    end    
+    #else
+    #  create_link(original)
+    #end    
   end
 end
 
