@@ -1,248 +1,254 @@
-%w(rubygems sinatra haml data_mapper dm-core dm-timestamps dm-types uri restclient xmlsimple dirty_words).each  { |lib| require lib}
-disable :show_exceptions
+#!/usr/bin/env ruby
+#
+# A complete URL-shortening web application, written in Ruby/Sinatra. Run it 
+# from the command line, and then visit http://localhost:4567/
+#
+# Or to run it under apache/passenger, you'll need a config.ru file with the
+# following contents:
+#
+#   require 'tinyurl'
+#   run Sinatra::Application
+#
+# 11 Apr 2009
+# West Arete Computing
+# http://westarete.com/
 
-DataMapper::Logger.new($stdout, :debug)
+require 'rubygems'
+require 'sinatra'
+require 'active_record'
 
-get '/' do haml :index end
+# ===== Controller =====
 
+# Our home page lets people enter URLs to shorten.
+get '/' do
+  @link = Link.new
+  haml :new
+end
+
+# Create a new short URL.
 post '/' do
-  puts params
-  uri = URI::parse(params[:original])
-  custom = params[:custom].empty? ? nil : params[:custom]
-  raise "Invalid URL" unless uri.kind_of? URI::HTTP or uri.kind_of? URI::HTTPS
-  @link = Link.shorten(params[:original], custom) 
-  haml :index
-end
-
-['/info/:short_url', '/info/:short_url/:num_of_days', '/info/:short_url/:num_of_days/:map'].each do |path|
-  get path do
-    @link = Link.first(:identifier => params[:short_url])
-    raise 'This link is not defined yet' unless @link
-    @num_of_days = (params[:num_of_days] || 15).to_i
-    @count_days_bar = Visit.count_days_bar(params[:short_url], @num_of_days)
-    chart = Visit.count_country_chart(params[:short_url], params[:map] || 'world')
-    @count_country_map = chart[:map]
-    @count_country_bar = chart[:bar]
-    haml :info
-  end
-end
-
-get '/:short_url' do 
-  link = Link.first(:identifier => params[:short_url])
-  link.visits << Visit.create(:ip => get_remote_ip(env))
-  link.save
-  redirect link.url.original, 301
-end
-
-error do haml :index end
-
-def get_remote_ip(env)
-  if addr = env['HTTP_X_FORWARDED_FOR']
-    addr.split(',').first.strip
+  # See if it already exists.
+  @link = Link.find_by_url(params[:link][:url])
+  if @link
+    haml :show
   else
-    env['REMOTE_ADDR']
+    # Create a new one.
+    @link = Link.new(params[:link])
+    if @link.save
+      haml :show
+    else
+      haml :new
+    end
   end
 end
+
+# Render the CSS stylesheet.
+get '/stylesheet.css' do
+  content_type 'text/css', :charset => 'utf-8'
+  sass :stylesheet
+end
+
+# Redirect the visitor to the appropriate URL.
+get '/:code' do
+  @link = Link.find_by_code!(params[:code])
+  @link.seen += 1
+  @link.save!
+  redirect @link.url
+end
+
+# https://groups.google.com/forum/#!msg/copenhagen-ruby-user-group/GEHgi_WudmM/gnCiwWqmVfMJ
+# I have an issue with sinatra/activerecord, for some reason,
+# activerecord does not check the connection back into the pool, when
+# the request ends, so after [pool size] requests, the app starts
+# throwing this at me:
+# ActiveRecord::ConnectionTimeoutError - could not obtain a database connection within 5 seconds. The max pool size is currently 5; consider increasing it.
+# I initially filed it in a support ticket at heroku, because I didn't discover before I deployed, but have since reproduced the problem locally.
+
+after do
+    ActiveRecord::Base.clear_active_connections!
+end
+
+# ===== Model =====
+
+# See if we need to load the schema now, since the database will get created
+# as soon as we connect.
+dbfile = File.dirname(__FILE__) + '/database.sqlite3'
+need_to_load_schema = ! File.exist?(dbfile)
+
+# Connect to the database.
+ActiveRecord::Base.establish_connection(:adapter => 'sqlite3', :database => dbfile)
+
+# Create the database if it doesn't already exist.
+if need_to_load_schema
+  ActiveRecord::Schema.define do
+    create_table "links", :force => true do |t|
+      t.text     "url",   :null => false
+      t.integer  "seen",  :null => false, :default => 0
+      t.datetime "created_at"
+    end
+    add_index "links", ["url"], :name => "index_links_url", :unique => true
+  end
+end
+
+# Due to the way that Sinatra reloads code, we need to wipe out our definition
+# of the Link class after each request (in development mode).
+Object.module_eval { remove_const(:Link) if const_defined?(:Link) } 
+  
+# This class is used to access the links that we create and follow.
+class Link < ActiveRecord::Base  
+  validates_presence_of   :url, :message => "You must specify a URL."
+  validates_length_of     :url, :maximum => 4096, :allow_blank => true, :message => "That URL is too long."
+  validates_format_of     :url, :with => %r{^(https?|ftp)://.+}i, :allow_blank => true, :message => "The URL must start with http://, https://, or ftp:// ."
+
+  # :url is the only attribute that can be set via mass assignment, and only
+  # via .new
+  attr_accessible :url
+  attr_readonly   :url
+  
+  # Retrieve the link with the given code. Raises Sinatra::NotFound if not
+  # no such record.
+  def self.find_by_code!(code)
+    find_by_id(code.to_i(36)) or raise Sinatra::NotFound
+  end
+
+  # Return the code for this link. The code is the id in base 36 (all digits
+  # plus all lowercase letters).
+  def code
+    id ? id.to_s(36) : nil
+  end  
+end
+
+# ===== Helpers =====
+
+# Helper methods that will be available in our route handlers and views.
+helpers do
+
+  # Escape HTML
+  def h(text)
+    Rack::Utils.escape_html(text)
+  end
+  
+  # Escape URIs
+  def u(text)
+    URI.escape(text)
+  end
+  
+  # The root URL for this site.
+  def root_url
+    server_name = headers['SERVER_NAME'] || 'localhost:4567'
+    'http://' + server_name
+  end
+  
+  # Return the proper pluralization for this number/word combination.
+  def pluralize(number, word)
+    "#{number} #{word}" + (number == 1 ? '' : 's') 
+  end
+    
+  # Truncate the given text at the given length, adding ... to the end.
+  def truncate(text, length)
+    if text.length > length
+      text[0...(length-3)] + '...'
+    else
+      text
+    end
+  end
+  
+  # Creates the browser link that people can use to post the current URL in
+  # their browser to this application.
+  def bookmarklet(text)
+    # We need to POST the current URL to / from javascript. The only way
+    # that I know to do this is to use javascript to create a form on the
+    # current page, and then submit that form to /.
+    js_code = <<-EOF
+      var%20f = document.createElement('form'); 
+      f.style.display = 'none'; 
+      document.body.appendChild(f); 
+      f.method = 'POST'; 
+      f.action = '#{root_url}/'; 
+      var%20m = document.createElement('input'); 
+      m.setAttribute('type', 'hidden'); 
+      m.setAttribute('name', 'link[url]'); 
+      m.setAttribute('value', location.href); 
+      f.appendChild(m); 
+      f.submit();
+      EOF
+      
+    # Remove all the whitespace from the javascript, so that it's a
+    # bookmarkable URL.
+    js_code.gsub!(/\s+/, '')
+    
+    # Return the link.
+    %(<a href="javascript:#{js_code}">#{text}</a>)
+  end
+  
+end
+
+# ===== Views =====
 
 #use_in_file_templates!
-
-#DataMapper.setup(:default, ENV['DATABASE_URL'] || 'mysql://root:root@localhost/tinyclone')
-DataMapper.setup(:default, ENV['DATABASE_URL'] || "sqlite3://#{Dir.pwd}/tinyclone.db")
-class Url
-  include DataMapper::Resource
-  property  :id,          Serial
-  property  :original,    String, :length => 255   
-  belongs_to  :link
-end
-
-class Link
-  include DataMapper::Resource
-  property  :identifier,  String, :key => true
-  property  :created_at,  DateTime 
-  has 1, :url
-  has n, :visits
-  
-  def self.shorten(original, custom=nil)
-    puts "Inside shorten!!!!"
-    url = Url.first(:original => original) 
-    puts "url = <<#{url}>>"
-    puts  "url.link = #{url.link}" if url
-    return url.link if url
-    link = nil
-    if custom
-      raise 'Someone has already taken this custom URL, sorry' unless Link.first(:identifier => custom).nil?
-      raise 'This custom URL is not allowed because of profanity' if DIRTY_WORDS.include? custom
-      transaction do |txn|
-        link = Link.new(:identifier => custom)
-        link.url = Url.create(:original => original)
-        link.save        
-      end
-    else
-      transaction do |txn|
-        link = create_link(original)
-      end    
-    end
-    return link
-  end
-  
-  private
-  
-  def self.create_link(original)
-    puts "inside self.create_link(#{original})"
-    url = Url.create(:original => original)
-    if url.saved? 
-      puts "#{url} is a DataMapper::Resource"
-    else
-      puts "#{url} is not yet saved"
-    end
-    #url = Url.create()
-    #url.original = original
-    puts "<<<<#{url}>>>> <<<<#{url.id}>>>>"
-    url.id = 0 if url.id.nil?
-    url.id += 1
-    url.save
-    #if Link.first(:identifier => url.id.to_s(36)).nil? or !DIRTY_WORDS.include? url.id.to_s(36)
-#     link = Link.new(:identifier => url.id.to_s(36))
-      link = Link.new()
-      link.identifier = url.id.to_s(36)
-      link.url = url
-      link.save 
-      return link     
-    #else
-    #  create_link(original)
-    #end    
-  end
-end
-
-class Visit
-  include DataMapper::Resource
-  
-  property  :id,          Serial
-  property  :created_at,  DateTime
-  property  :ip,          IPAddress
-  property  :country,     String
-  belongs_to  :link
-  
-  after :create, :set_country
-  
-  def set_country
-    xml = RestClient.get "http://api.hostip.info/get_xml.php?ip=#{ip}"  
-    self.country = XmlSimple.xml_in(xml.to_s, { 'ForceArray' => false })['featureMember']['Hostip']['countryAbbrev']
-    self.save
-  end
-  
-  def self.count_days_bar(identifier,num_of_days)
-    visits = count_by_date_with(identifier,num_of_days)
-    data, labels = [], []
-    visits.each {|visit| data << visit[1]; labels << "#{visit[0].day}/#{visit[0].month}" }
-    "http://chart.apis.google.com/chart?chs=820x180&cht=bvs&chxt=x&chco=a4b3f4&chm=N,000000,0,-1,11&chxl=0:|#{labels.join('|')}&chds=0,#{data.sort.last+10}&chd=t:#{data.join(',')}"
-  end
-  
-  def self.count_country_chart(identifier,map)
-    countries, count = [], []
-    count_by_country_with(identifier).each {|visit| countries << visit.country; count << visit.count }
-    chart = {}
-    chart[:map] = "http://chart.apis.google.com/chart?chs=440x220&cht=t&chtm=#{map}&chco=FFFFFF,a4b3f4,0000FF&chld=#{countries.join('')}&chd=t:#{count.join(',')}"
-    chart[:bar] = "http://chart.apis.google.com/chart?chs=320x240&cht=bhs&chco=a4b3f4&chm=N,000000,0,-1,11&chbh=a&chd=t:#{count.join(',')}&chxt=x,y&chxl=1:|#{countries.reverse.join('|')}"
-    return chart
-  end
-  
-  def self.count_by_date_with(identifier,num_of_days)
-    visits = repository(:default).adapter.query("SELECT date(created_at) as date, count(*) as count FROM visits where link_identifier = '#{identifier}' and created_at between CURRENT_DATE-#{num_of_days} and CURRENT_DATE+1 group by date(created_at)")
-    dates = (Date.today-num_of_days..Date.today)
-    results = {}
-    dates.each { |date|
-      visits.each { |visit| results[date] = visit.count if visit.date == date }
-      results[date] = 0 unless results[date]
-    }
-    results.sort.reverse    
-  end
-  
-  def self.count_by_country_with(identifier)
-    repository(:default).adapter.query("SELECT country, count(*) as count FROM visits where link_identifier = '#{identifier}' group by country")    
-  end
-end
-
-#require  'dm-migrations'
-
-#DataMapper.finalize
-
-DataMapper.auto_upgrade!
-
+enable :inline_templates
 __END__
 
+@@ new
+#new
+  - unless @link.errors.empty?
+    .error
+      - for error in @link.errors.on(:url)
+        %p= error
+
+  %form{:action => '/', :method => 'post'}
+    %label
+      %input{:type => 'text', :size => '50', :name => 'link[url]', :value => @link.url}/
+    %input{:type => 'submit', :value => 'Make Tiny'}/
+    
+
+@@ show
+#show
+  %dl
+    %dt Tiny URL (copy this):
+    %dd
+      %a{:href => '/' + @link.code}= h(root_url + '/' + @link.code)
+    %dt Points to: 
+    %dd
+      %a{:href => u(@link.url)}= h(truncate(@link.url, 60))
+    %dt First created:
+    %dd= @link.created_at.strftime('%A, %B %d, %Y at %I:%M:%S %p')
+    %dt Used:
+    %dd= pluralize(@link.seen, 'time')
+
+
 @@ layout
-!!! 1.1
-%html
+!!! XML
+!!! Strict
+%html{:xmlns => "http://www.w3.org/1999/xhtml", "xml:lang" => "en"}
   %head
-    %title TinyClone
-    %link{:rel => 'stylesheet', :href => 'http://www.blueprintcss.org/blueprint/screen.css', :type => 'text/css'}  
+    %meta{"http-equiv" => "Content-type", "content" => "text/html; charset=utf-8"}/
+    %link{:rel => 'stylesheet', :href => '/stylesheet.css', :type => 'text/css', :media => "screen, projection"}/
+    %title Tiny URL
+
   %body
-    .container
-      %p
-      = yield
+    %h1#title 
+      %a{:href=>'/'} Tiny URL
+    %p#tagline Shorten long, unruly URLs for pasting into tweets, chats, and emails.
+  
+    = yield
+  
+    #footer
+      %p#bookmarklet
+        Drag this link to your browser's bookmark bar to create a tiny URL 
+        anywhere: 
+        = bookmarklet("Link!")
 
-@@ index
-%h1.title TinyClone
-- unless @link.nil?
-  .success
-    %code= @link.url.original
-    has been shortened to 
-    %a{:href => "/#{@link.identifier}"}
-      = "http://localhost:9393/#{@link.identifier}"
-    %br
-    Go to 
-    %a{:href => "/info/#{@link.identifier}"}
-      = "http://localhost:9393/info/#{@link.identifier}"
-    to get more information about this link.
-- if env['sinatra.error']
-  .error= env['sinatra.error'] 
-%form{:method => 'post', :action => '/'}
-  Shorten this:
-  %input{:type => 'text', :name => 'original', :size => '70'} 
-  %input{:type => 'submit', :value => 'now!'}
-  %br
-  to http://localhost:9393/
-  %input{:type => 'text', :name => 'custom', :size => '20'} 
-  (optional)
-%p  
-%small copyright &copy;
-%a{:href => 'http://blog.saush.com'}
-  Chang Sau Sheong
-%p
-  %a{:href => 'http://github.com/sausheong/tinyclone'}
-    Full source code
-    
-@@info
-%h1.title Information
-.span-3 Original
-.span-21.last= @link.url.original  
-.span-3 Shortened
-.span-21.last
-  %a{:href => "/#{@link.identifier}"}
-    = "http://localhost:9393/#{@link.identifier}"
-.span-3 Date created
-.span-21.last= @link.created_at
-.span-3 Number of visits
-.span-21.last= "#{@link.visits.size.to_s} visits"
-    
-%h2= "Number of visits in the past #{@num_of_days} days"
-- %w(7 14 21 30).each do |num_days|
-  %a{:href => "/info/#{@link.identifier}/#{num_days}"}
-    ="#{num_days} days "
-  |
-%p
-.span-24.last
-  %img{:src => @count_days_bar}
+      %p#copyright
+        Copyright &copy;
+        = Time.now.year
+        %a{:href=>"http://westarete.com/"} West Arete Computing, Inc.
 
-%h2 Number of visits by country
-- %w(world usa asia europe africa middle_east south_america).each do |loc|
-  %a{:href => "/info/#{@link.identifier}/#{@num_of_days.to_s}/#{loc}"}
-    =loc
-  |
-%p
-.span-12
-  %img{:src => @count_country_map}
-.span-12.last
-  %img{:src => @count_country_bar}
-%p
+@@ stylesheet
+
+.error
+  :color red
+  
+#footer
+  :margin-top 5em
+  :font-size  small
